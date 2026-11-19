@@ -2,7 +2,7 @@ import {
   playBtn, loopBtn, totalDuration, loopEnabled, loopStart, loopEnd,
   setLoopStart, setLoopEnd, selectedStems, saveSelectedStems, stemSelectionReady,
   currentJobId, vocalSplitMode, vocalSplitModeReady, setVocalSplitMode,
-  setAutoSectionsResetFn,
+  setAutoSectionsResetFn, bgFixedBpmToggleEl,
 } from "./state.js";
 import { STEM_NAMES, syncStemNamesFromAPI } from "./constants.js";
 import { refreshStemChoiceVisuals } from "./stemChoice.js";
@@ -1039,6 +1039,11 @@ function wireAppShellControls() {
 // ─── Keyboard shortcuts ───
 
 document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && e.target === bgFixedBpmToggleEl) {
+    e.preventDefault();
+    if (transport()) togglePlayPause();
+    return;
+  }
   if (!transport()) return;
   // Textareas were not excluded, so Space in the log viewer started playback
   // instead of scrolling.

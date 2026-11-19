@@ -6,13 +6,16 @@
 import {
   bgToolbar, bgUndoBtn, bgRedoBtn, bgResetBtn, bgDoneBtn,
   bgRippleEl, bgSnapEl, bgBarLenEl, bgHintEl, metronome, metroEditBtn,
+  bgFixedBpmEl, bgFixedBpmToggleEl, bgFixedBpmErrorEl,
 } from "./state.js";
 import {
   setBeatGridEditing, isBeatGridEditing, setBeatGridTool, getBeatGridTool,
   setBeatGridRipple, getBeatGridRipple, setBeatGridSnap, getBeatGridSnap,
   undoBeatGrid, redoBeatGrid, resetBeatGrid, canUndo, canRedo,
   barLengthAt, setBarLengthAt, getBeats,
+  getBeatGridBpm, applyFixedBpm, setBeatGridFixedBpm, getBeatGridFixedBpm,
 } from "./beatgrid.js";
+import { t } from "./i18n.js";
 import { applyMetronomeAccent, toggleMetronome, onMetronomeToggle } from "./transport.js";
 
 const TOOL_BTNS = [
@@ -23,6 +26,33 @@ const TOOL_BTNS = [
 ];
 
 let _available = false;
+let _bpmPending = false;
+
+function _syncFixedBpm() {
+  if (!bgFixedBpmEl || _bpmPending) return;
+  const bpm = getBeatGridBpm();
+  bgFixedBpmEl.value = bpm === null ? "" : String(+bpm.toFixed(3));
+}
+
+function _clearBpmError() {
+  bgFixedBpmEl?.removeAttribute("aria-invalid");
+  if (bgFixedBpmErrorEl) bgFixedBpmErrorEl.textContent = "";
+}
+
+function _applyFixedBpm() {
+  if (!bgFixedBpmToggleEl?.checked) return;
+  if (!_bpmPending) { _syncFixedBpm(); return; }
+  const result = applyFixedBpm(bgFixedBpmEl.valueAsNumber);
+  if (!result.ok) {
+    bgFixedBpmEl.setAttribute("aria-invalid", "true");
+    if (bgFixedBpmErrorEl) bgFixedBpmErrorEl.textContent = t(`beatgrid.${result.reason}`);
+    return;
+  }
+  _bpmPending = false;
+  _clearBpmError();
+  _syncFixedBpm();
+  if (bgHintEl && !getBeats().length) bgHintEl.textContent = t("beatgrid.empty");
+}
 
 function _syncTools() {
   const active = getBeatGridTool();
@@ -32,13 +62,18 @@ function _syncTools() {
     const on = tool === active;
     btn.classList.toggle("active", on);
     btn.setAttribute("aria-checked", on ? "true" : "false");
-    if (on && bgHintEl) bgHintEl.textContent = hint;
+    if (on && bgHintEl) bgHintEl.textContent = !getBeats().length ? t("beatgrid.empty")
+      : tool === "move" && getBeatGridFixedBpm() ? t("beatgrid.fixedDragHint") : hint;
   }
 }
 
 export function syncBeatGridButtons() {
   if (bgUndoBtn) bgUndoBtn.disabled = !canUndo();
   if (bgRedoBtn) bgRedoBtn.disabled = !canRedo();
+  if (bgFixedBpmToggleEl) bgFixedBpmToggleEl.checked = getBeatGridFixedBpm();
+  if (bgFixedBpmEl) bgFixedBpmEl.disabled = !_available || !getBeatGridFixedBpm();
+  _syncFixedBpm();
+  _syncTools();
 }
 
 /** Reflect the bar length in force at the current grid position. */
@@ -46,8 +81,22 @@ function _syncBarLen() {
   if (bgBarLenEl) bgBarLenEl.value = String(barLengthAt(0));
 }
 
+export function showBeatGridSaveError(failed) {
+  const el = document.getElementById("bg-save-error");
+  if (el) el.textContent = failed ? t("beatgrid.saveFailed") : "";
+}
+
 export function setBeatGridAvailable(on) {
   _available = !!on;
+  if (!_available) {
+    setBeatGridFixedBpm(false);
+    _bpmPending = false;
+    if (bgFixedBpmToggleEl) bgFixedBpmToggleEl.checked = false;
+    _clearBpmError();
+    if (bgFixedBpmEl) bgFixedBpmEl.value = "";
+  }
+  if (bgFixedBpmToggleEl) bgFixedBpmToggleEl.disabled = !_available;
+  if (bgFixedBpmEl) bgFixedBpmEl.disabled = !_available || !bgFixedBpmToggleEl?.checked;
   if (metroEditBtn) metroEditBtn.disabled = !_available;
   if (!_available && isBeatGridEditing()) toggleBeatGridEditor(false);
 }
@@ -82,6 +131,23 @@ export const isBeatGridEditorOpen = () => isBeatGridEditing();
 
 export function wireBeatGridUi() {
   if (!bgToolbar) return;
+
+  bgFixedBpmToggleEl?.addEventListener("change", () => {
+    setBeatGridFixedBpm(bgFixedBpmToggleEl.checked);
+    _syncTools();
+    if (bgFixedBpmEl) bgFixedBpmEl.disabled = !bgFixedBpmToggleEl.checked;
+    _bpmPending = false;
+    _clearBpmError();
+    _syncFixedBpm();
+  });
+  bgFixedBpmEl?.addEventListener("input", () => { _bpmPending = true; });
+  bgFixedBpmEl?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      _applyFixedBpm();
+    }
+  });
+  bgFixedBpmEl?.addEventListener("blur", _applyFixedBpm);
 
   for (const [id, tool] of TOOL_BTNS) {
     document.getElementById(id)?.addEventListener("click", () => {

@@ -751,3 +751,29 @@ def test_a_nonsense_grouping_does_not_fail_the_export(client, tmp_path):
         "&click_accent=7&click_groups=99%2B99"
     )
     assert r.status_code != 422
+
+
+def test_export_reads_manual_grid_without_automatic_grid(client, tmp_path):
+    from app.api import stems as stems_mod
+
+    stems = _setup_job(tmp_path, with_grid=False)
+    (stems / "beats.user.json").write_text(json.dumps({"beats": [0, 0.5, 1], "bars": []}))
+    grid = stems_mod._read_beat_grid(JOB)
+    assert grid is not None
+    assert grid["beats"] == [0, 0.5, 1]
+    assert grid["bars"] == []
+
+
+def test_manual_grid_exports_click_for_the_full_track(client, tmp_path):
+    import soundfile as sf
+
+    from app.api import stems as stems_mod
+
+    stems = _setup_job(tmp_path, with_grid=False)
+    _jobs[JOB].duration_sec = 3.0
+    (stems / "beats.user.json").write_text(json.dumps({"beats": [0, 0.5, 1], "bars": []}))
+    lane = stems_mod._click_lane(JOB, True, 1.0, ACCENT_AUTO, 0.6)
+    assert lane is not None
+    audio, rate = sf.read(lane.path)
+    assert len(audio) / rate == pytest.approx(3.0)
+    assert abs(audio[int(0.5 * rate) : int(0.55 * rate)]).max() > 0

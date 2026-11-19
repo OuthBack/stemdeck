@@ -3084,7 +3084,32 @@ input, textarea { font-family: inherit; }
   border-radius: 4px; color: var(--fg);
   font-family: inherit; font-size: 11px; font-weight: 600; text-align: center;
 }
+#bg-barlen,
+#bg-fixed-bpm {
+  width: 72px; min-width: 72px; min-height: 28px; padding: 4px 8px;
+  font-size: 13px; font-variant-numeric: tabular-nums; flex-shrink: 0;
+}
 .bg-spacer { flex: 1; min-width: 8px; }
+#bg-fixed-bpm-toggle {
+  appearance: none; width: 26px; height: 15px; margin: 0;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--panel); position: relative; flex-shrink: 0;
+}
+#bg-fixed-bpm-toggle::before {
+  content: ""; position: absolute; width: 9px; height: 9px;
+  top: 2px; left: 2px; border-radius: 50%; background: var(--muted);
+}
+#bg-fixed-bpm-toggle:checked { background: var(--accent); border-color: var(--accent); }
+#bg-fixed-bpm-toggle:checked::before { transform: translateX(11px); background: var(--panel); }
+.bg-fixed-bpm input[type="number"]:disabled { opacity: 0.45; cursor: not-allowed; }
+.bg-fixed-bpm input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bg-fixed-bpm input[aria-invalid="true"] { border-color: var(--danger); }
+.bg-bpm-description {
+  position: absolute; width: 1px; height: 1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+.bg-bpm-error { flex-basis: 100%; color: var(--fg); font-size: 11px; }
+.bg-bpm-error:empty { display: none; }
 .bg-hint { font-size: 10.5px; color: var(--muted); flex-basis: 100%; }
 
 /* Click track options: inline in the Click track cluster, always visible once
@@ -5551,9 +5576,8 @@ input, textarea { font-family: inherit; }
  * They stay on the row and go quiet rather than leaving it, which is how the
  * metronome button beside them and every unavailable lane in the mixer already
  * behave. Half a control strip appearing and vanishing reads as a fault. */
-.footer-metro-panel.unavailable {
+.footer-metro-panel.unavailable > :not(#t-metro-edit) {
   opacity: 0.4;
-  pointer-events: none;
 }
 /* Except when the panel is the popover (#697). There it has a box of its own,
  * and fading that box with its contents left a 40% ghost of a panel floating
@@ -5565,7 +5589,7 @@ input, textarea { font-family: inherit; }
   opacity: 1;
   pointer-events: auto;
 }
-.footer-clusters.collapse-click .footer-metro-panel.unavailable > * {
+.footer-clusters.collapse-click .footer-metro-panel.unavailable > :not(#t-metro-edit) {
   opacity: 0.4;
   pointer-events: none;
 }

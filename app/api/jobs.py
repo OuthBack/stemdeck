@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import os
 import re
 import shutil
@@ -18,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, StrictBool, field_validator
 
+from app.core.beat_grid import BeatsBody, read_beat_grid
 from app.core.config import (
     DISCOGS_LOOKUP_BUDGET_SEC,
     JOB_ID_RE,
@@ -101,6 +101,7 @@ logger = logging.getLogger("stemdeck.api")
 
 _ALLOWED_EXTS = frozenset((".mp3", ".wav", ".flac", ".mp4", ".m4a", ".ogg", ".opus"))
 _MAX_UPLOAD_BYTES = 400 * 1024 * 1024  # 400 MB
+_MAX_SECTION_TIME_SECONDS = 86400
 _WS_RE = re.compile(r"\s+")
 
 # Now that imports queue instead of running immediately, a full queue is a
@@ -796,7 +797,7 @@ class SectionItem(BaseModel):
     @field_validator("start", "end")
     @classmethod
     def _check_time(cls, v: float) -> float:
-        if not (0 <= v < 86400):
+        if not (0 <= v < _MAX_SECTION_TIME_SECONDS):
             raise ValueError("time out of range")
         return round(v, 3)
 
@@ -1602,41 +1603,6 @@ async def delete_user_synced(job_id: str) -> dict:
     return {"user_synced": None}
 
 
-# Upper bound on an edited grid. A 20-minute track at 300 BPM is ~6000 beats;
-# 20000 leaves generous headroom while refusing a payload crafted to exhaust
-# memory or disk.
-_MAX_EDITED_BEATS = 20000
-_MAX_BARS = 2000
-
-
-class BarMark(BaseModel):
-    """A downbeat and the bar length that runs from it until the next mark."""
-
-    beat: int = Field(ge=0, lt=_MAX_EDITED_BEATS)
-    beats_per_bar: int = Field(ge=1, le=32)
-
-
-class BeatsBody(BaseModel):
-    beats: list[float] = Field(max_length=_MAX_EDITED_BEATS)
-    bars: list[BarMark] = Field(default_factory=list, max_length=_MAX_BARS)
-
-    @field_validator("beats")
-    @classmethod
-    def _check_beats(cls, v: list[float]) -> list[float]:
-        # The client scheduler binary-searches this array and assumes it is
-        # sorted and strictly increasing; enforce that at the boundary rather
-        # than trusting the editor to have maintained it.
-        out: list[float] = []
-        for t in v:
-            if not math.isfinite(t) or not (0 <= t < 86400):
-                raise ValueError("beat time out of range")
-            r = round(float(t), 6)
-            if out and r <= out[-1]:
-                raise ValueError("beat times must be strictly increasing")
-            out.append(r)
-        return out
-
-
 def _beats_paths(job_id: str) -> tuple[Path, Path]:
     """(computed, user-edited) grid paths, both verified inside JOBS_DIR."""
     stems = (JOBS_DIR / job_id / "stems").resolve()
@@ -1728,29 +1694,13 @@ def get_beats(job_id: str) -> Response:
     if job is None or job.status != "done":
         raise HTTPException(status_code=404, detail="job not ready")
 
-    computed_path, user_path = _beats_paths(job_id)
-    if not computed_path.is_file():
-        raise HTTPException(status_code=404, detail="beat grid not found")
+    computed_path, _ = _beats_paths(job_id)
     try:
-        grid = json.loads(computed_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.exception("unreadable beat grid for %s", job_id)
-        raise HTTPException(status_code=404, detail="beat grid not found") from exc
-
-    # User edits override the detected beats but keep the computed onsets,
-    # which the editor still needs for snapping and which editing never changes.
-    if user_path.is_file():
-        try:
-            edits = json.loads(user_path.read_text(encoding="utf-8"))
-            if isinstance(edits.get("beats"), list) and edits["beats"]:
-                grid["beats"] = edits["beats"]
-                grid["bars"] = edits.get("bars") or []
-                grid["edited"] = True
-        except (OSError, json.JSONDecodeError):
-            logger.warning("ignoring unreadable beat edits for %s", job_id)
-
-    grid.setdefault("bars", [])
-    grid.setdefault("edited", False)
+        grid = read_beat_grid(computed_path.parent)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail="failed to load beat grid") from exc
+    if grid is None:
+        raise HTTPException(status_code=404, detail="beat grid not found")
     return JSONResponse(grid, headers={"Cache-Control": "no-store"})
 
 
@@ -1798,8 +1748,8 @@ async def update_beats(job_id: str, request: Request) -> dict:
         raise HTTPException(status_code=404, detail="job not ready")
 
     computed_path, user_path = _beats_paths(job_id)
-    if not computed_path.is_file():
-        raise HTTPException(status_code=404, detail="beat grid not found")
+    if not computed_path.parent.is_dir():
+        raise HTTPException(status_code=404, detail="stems not found")
 
     payload = {
         "version": 1,

@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
+from app.core.beat_grid import read_beat_grid
 from app.core.config import (
     CACHE_DIR,
     EXTRA_STEM_NAMES,
@@ -271,7 +272,8 @@ def _click_lane(
     if not beats:
         return None
     bars = grid.get("bars") or []
-    duration = float(grid.get("duration") or 0.0)
+    job = registry_get(job_id)
+    duration = float(grid.get("duration") or getattr(job, "duration_sec", None) or 0.0)
     sample_rate = get_export_sample_rate()
     g = max(0.0, min(4.0, gain))
 
@@ -378,26 +380,11 @@ def _read_beat_grid(job_id: str) -> dict | None:
     stems = (JOBS_DIR / job_id / "stems").resolve()
     if not stems.is_relative_to(JOBS_DIR.resolve()):
         return None
-    computed = stems / "beats.json"
-    if not computed.is_file():
-        return None
     try:
-        grid = json.loads(computed.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return read_beat_grid(stems)
+    except (OSError, ValueError):
+        logger.warning("unreadable beat grid for %s", job_id)
         return None
-    user = stems / "beats.user.json"
-    if user.is_file():
-        try:
-            edits = json.loads(user.read_text(encoding="utf-8"))
-            if isinstance(edits.get("beats"), list) and edits["beats"]:
-                grid["beats"] = edits["beats"]
-                grid["bars"] = edits.get("bars") or []
-        except (OSError, json.JSONDecodeError):
-            # Fall back to the detected grid rather than failing the export,
-            # but say so: silently ignoring this is how a user ends up asking
-            # why their grid edits disappeared.
-            logger.warning("ignoring unreadable beat edits for %s", job_id)
-    return grid
 
 
 # Transpose on export (#592). The studio shifts pitch in the browser with a

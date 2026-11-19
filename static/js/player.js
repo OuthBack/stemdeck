@@ -36,7 +36,7 @@ import { addVisualOnlyStems, buildPlaybackStems } from "./playbackStems.js";
 import { vuLevel } from "./vuScale.js";
 import { createMetronome } from "./metronome.js";
 import { initBeatGrid, destroyBeatGrid } from "./beatgrid.js";
-import { setBeatGridAvailable, syncBeatGridButtons } from "./beatgridUi.js";
+import { setBeatGridAvailable, syncBeatGridButtons, showBeatGridSaveError } from "./beatgridUi.js";
 import {
   loadMixIntoState, resetMixerState, refreshMixerVisuals,
   setLaneControlsEnabled, ensureMixerStateDefaults, applyMix,
@@ -48,7 +48,7 @@ import {
   applyWaveZoom, resetWaveZoom, WAVE_ZOOM_MAX,
   buildPresenceRuler, buildFooterWaveTicks, updateFooterTimes,
   updatePresencePlayhead, resetSpeed, resetPitch, updatePitchAvailability,
-  updateMetronomeAvailability, applyMetronomeAccent,
+  updateMetronomeAvailability, applyMetronomeAccent, toggleMetronome,
 } from "./transport.js";
 import { stopVuLoop } from "./audio.js";
 import { destroySections } from "./sections.js";
@@ -1200,8 +1200,19 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
         const ac = new AbortController();
         const timer = setTimeout(() => ac.abort(), 5000);
         return fetch(`/api/jobs/${jobId}/beats`, { signal: ac.signal })
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null)
+          .then(async (r) => {
+            if (r.status === 404) return { beats: [], bars: [] };
+            if (!r.ok) throw new Error(`GET beats ${r.status}`);
+            const grid = await r.json();
+            if (!Array.isArray(grid?.beats)
+                || grid.beats.some((time, i) => !Number.isFinite(time) || time < 0
+                  || time >= 86400 || (i > 0 && time <= grid.beats[i - 1]))
+                || (grid.bars !== undefined && !Array.isArray(grid.bars))) {
+              throw new Error("invalid beat grid");
+            }
+            return grid;
+          })
+          .catch(() => ({ loadFailed: true }))
           .finally(() => clearTimeout(timer));
       })()
     : Promise.resolve(null);
@@ -1534,40 +1545,54 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
           _beatsPromise.then((grid) => {
             if (token !== visualRenderToken || multitrack !== mt || audioEngine !== eng) return;
             teardownMetronome();
-            const beats = Array.isArray(grid?.beats) ? grid.beats : null;
-            if (!beats?.length) {
-              updateMetronomeAvailability(null, t("click.reason.noBeatGrid"));
+            if (grid?.loadFailed) {
+              updateMetronomeAvailability(null, t("click.reason.gridLoadFailed"));
               setExportClickAvailable(false);
               return;
             }
-            const m = createMetronome(eng, beats, {
-              volume: metronomeVolume,
-              beatsPerBar: metronomeBeatsPerBar,
-            });
-            setMetronome(m);
-            updateMetronomeAvailability(m ? grid : null,
-              m ? "" : t("click.reason.unavailableOnPath"));
-            if (m && metronomeEnabled) m.setEnabled(true);
-
-            // Grid editor over the same data. Every edit pushes straight into
-            // the running click, so a dragged beat is audible on the next beat
-            // rather than after a reload.
+            const compatible = !!eng.audioContext && !!eng.getMasterNode?.()
+              && typeof eng.sourceTimeToCtxTime === "function"
+              && typeof eng.ctxTimeToSourceTime === "function";
+            if (!compatible || !jobId || !Number.isFinite(totalDuration) || totalDuration <= 0) {
+              updateMetronomeAvailability(null, t("click.reason.unavailableOnPath"));
+              setExportClickAvailable(false);
+              return;
+            }
+            // The editor survives an empty grid. Only the scheduler depends on
+            // beats; every mutation updates all consumers through this path.
+            const updateGrid = (nextBeats, nextBars, edited = true) => {
+              if (token !== visualRenderToken || multitrack !== mt || audioEngine !== eng) return;
+              const hadMetronome = !!metronome;
+              if (!nextBeats.length) {
+                metronome?.destroy();
+                setMetronome(null);
+              } else if (metronome) {
+                metronome.setBeats(nextBeats);
+              } else {
+                setMetronome(createMetronome(eng, nextBeats, {
+                  volume: metronomeVolume,
+                  beatsPerBar: metronomeBeatsPerBar,
+                }));
+              }
+              const nextGrid = { ...grid, beats: nextBeats, bars: nextBars };
+              setMetronomeHasBars(nextBars.length > 0);
+              updateMetronomeAvailability(metronome ? nextGrid : null, t("click.reason.noBeatGrid"));
+              setExportClickAvailable(!!metronome);
+              if (metronome && !hadMetronome && edited) toggleMetronome(true);
+              else metronome?.setEnabled(metronomeEnabled);
+              applyMetronomeAccent();
+              syncBeatGridButtons();
+            };
             const editable = initBeatGrid({
               jobId,
               grid,
               duration: totalDuration,
-              onChange: (nextBeats, nextBars) => {
-                m?.setBeats?.(nextBeats);
-                setMetronomeHasBars(Array.isArray(nextBars) && nextBars.length > 0);
-                applyMetronomeAccent();
-                syncBeatGridButtons();
-              },
+              onChange: updateGrid,
+              onSaveError: showBeatGridSaveError,
             });
-            setBeatGridAvailable(!!editable && !!m);
-            setExportClickAvailable(!!beats?.length);
-            // One place decides how accents are driven; the panel's Accent
-            // setting can override the detected bar marks.
-            applyMetronomeAccent();
+            updateGrid(grid?.beats || [], grid?.bars || [], false);
+            setBeatGridAvailable(!!editable);
+
           });
           if (kind === "chunked") {
             // Streaming path: the engine holds no full buffers. Overview waveforms

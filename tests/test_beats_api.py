@@ -207,9 +207,13 @@ def test_patch_rejects_implausible_bar_length(client, tmp_path, done_job, bpb):
     assert r.status_code == 422
 
 
-def test_patch_404s_without_a_computed_grid(client, tmp_path, done_job):
+def test_patch_creates_manual_grid_without_computed_grid(client, tmp_path, done_job):
     r = client.patch(f"/api/jobs/{JOB}/beats", json={"beats": [0.2, 0.9]})
-    assert r.status_code == 404
+    assert r.status_code == 200
+    assert client.get(f"/api/jobs/{JOB}/beats").json()["beats"] == [0.2, 0.9]
+    assert not (tmp_path / JOB / "stems" / "beats.json").exists()
+    assert client.delete(f"/api/jobs/{JOB}/beats").status_code == 200
+    assert client.get(f"/api/jobs/{JOB}/beats").status_code == 404
 
 
 @pytest.mark.parametrize("bad", ["ABC", "abcdefabcdef0", "abcd-efabcdef"])
@@ -247,3 +251,45 @@ def test_delete_is_idempotent(client, tmp_path, done_job):
 def test_delete_rejects_malformed_job_id(client):
     resp = client.delete("/api/jobs/ABC/beats")
     assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("status,stems", [("done", False), ("separating", True)])
+def test_manual_grid_requires_ready_stems(client, tmp_path, status, stems):
+    job = Job(id=JOB)
+    job.status = status
+    _jobs[JOB] = job
+    if stems:
+        (tmp_path / JOB / "stems").mkdir(parents=True)
+    assert client.patch(f"/api/jobs/{JOB}/beats", json={"beats": [0, 0.5]}).status_code == 404
+
+
+def test_get_rejects_unreadable_computed_grid(client, tmp_path, done_job):
+    (tmp_path / JOB / "stems" / "beats.json").write_text("{broken")
+    assert client.get(f"/api/jobs/{JOB}/beats").status_code == 500
+
+
+@pytest.mark.parametrize("content", ["{truncated", '{"beats":[1,0]}', '{"beats":"bad"}'])
+def test_manual_only_invalid_grid_is_load_error(client, tmp_path, done_job, content):
+    (tmp_path / JOB / "stems" / "beats.user.json").write_text(content)
+    assert client.get(f"/api/jobs/{JOB}/beats").status_code == 500
+
+
+def test_manual_only_unreadable_grid_is_load_error(client, tmp_path, done_job, monkeypatch):
+    from pathlib import Path
+
+    user = tmp_path / JOB / "stems" / "beats.user.json"
+    user.write_text('{"beats":[0,0.5]}')
+    original = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path == user:
+            raise PermissionError("unreadable manual grid")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    assert client.get(f"/api/jobs/{JOB}/beats").status_code == 500
+
+
+def test_manual_only_empty_grid_is_absent(client, tmp_path, done_job):
+    (tmp_path / JOB / "stems" / "beats.user.json").write_text('{"beats":[]}')
+    assert client.get(f"/api/jobs/{JOB}/beats").status_code == 404

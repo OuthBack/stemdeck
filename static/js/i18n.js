@@ -218,6 +218,15 @@ function applyStemRowAriaLabels(scope) {
 // ─────────────────────────────────────────────────────────────────────────
 
 const en = {
+  "beatgrid.empty": "Enter a BPM to create the grid",
+  "beatgrid.saveFailed": "Failed to save beat grid. Edit again to retry.",
+  "click.reason.gridLoadFailed": "Failed to load beat grid",
+  "beatgrid.fixedBpm": "Fixed BPM",
+  "beatgrid.fixedDragHint": "Drag any beat to move the whole grid while preserving the BPM.",
+  "beatgrid.fixedBpmDescription": "Redistribute beats evenly from the first beat to the end of the track. Press Enter or leave the field to apply.",
+  "beatgrid.invalidBpm": "Enter a BPM between 30 and 300.",
+  "beatgrid.tooManyBeats": "This BPM would create more than 20,000 beats. Choose a lower BPM.",
+  "beatgrid.unavailable": "The beat grid or track duration is unavailable.",
   "sections.kind.intro": "Intro",
   "sections.kind.outro": "Outro",
   "sections.kind.break": "Break",
@@ -1114,6 +1123,11 @@ const en = {
 };
 
 const pl = {
+  "beatgrid.fixedBpm": "Stałe BPM",
+  "beatgrid.fixedBpmDescription": "Rozmieść uderzenia równomiernie od pierwszego do końca utworu. Naciśnij Enter lub opuść pole, aby zastosować.",
+  "beatgrid.invalidBpm": "Wpisz BPM od 30 do 300.",
+  "beatgrid.tooManyBeats": "To BPM utworzyłoby ponad 20 000 uderzeń. Wybierz niższe BPM.",
+  "beatgrid.unavailable": "Siatka uderzeń lub czas trwania utworu są niedostępne.",
   "sections.kind.intro": "Intro",
   "sections.kind.outro": "Zakończenie",
   "sections.kind.break": "Przerwa",
@@ -2000,6 +2014,11 @@ const pl = {
 };
 
 const ja = {
+  "beatgrid.fixedBpm": "固定BPM",
+  "beatgrid.fixedBpmDescription": "最初のビートから曲の終わりまで等間隔に配置します。Enterキーを押すか欄から移動すると適用されます。",
+  "beatgrid.invalidBpm": "30〜300のBPMを入力してください。",
+  "beatgrid.tooManyBeats": "ビート数が20,000を超えます。BPMを下げてください。",
+  "beatgrid.unavailable": "ビートグリッドまたは曲の長さを利用できません。",
   "sections.kind.intro": "イントロ",
   "sections.kind.outro": "アウトロ",
   "sections.kind.break": "ブレイク",
@@ -2861,6 +2880,11 @@ const ja = {
 };
 
 const zhHans = {
+  "beatgrid.fixedBpm": "固定BPM",
+  "beatgrid.fixedBpmDescription": "从第一个节拍到曲目结尾均匀分布节拍。按Enter或离开输入框以应用。",
+  "beatgrid.invalidBpm": "请输入30到300之间的BPM。",
+  "beatgrid.tooManyBeats": "此BPM将生成超过20,000个节拍。请选择较低的BPM。",
+  "beatgrid.unavailable": "节拍网格或曲目时长不可用。",
   "sections.kind.intro": "前奏",
   "sections.kind.outro": "尾奏",
   "sections.kind.break": "间奏",
@@ -3722,6 +3746,11 @@ const zhHans = {
 };
 
 const de = {
+  "beatgrid.fixedBpm": "Festes BPM",
+  "beatgrid.fixedBpmDescription": "Verteilt die Schläge vom ersten Schlag bis zum Titelende gleichmäßig. Zum Anwenden Enter drücken oder das Feld verlassen.",
+  "beatgrid.invalidBpm": "BPM zwischen 30 und 300 eingeben.",
+  "beatgrid.tooManyBeats": "Dieses BPM würde mehr als 20.000 Schläge erzeugen. Niedrigeres BPM wählen.",
+  "beatgrid.unavailable": "Das Taktraster oder die Titeldauer ist nicht verfügbar.",
   "sections.kind.intro": "Intro",
   "sections.kind.outro": "Outro",
   "sections.kind.break": "Break",
@@ -4594,6 +4623,15 @@ const de = {
 };
 
 const pt = {
+  "beatgrid.empty": "Informe o BPM para criar a grade",
+  "beatgrid.saveFailed": "Falha ao salvar a grade. Edite novamente para tentar de novo.",
+  "click.reason.gridLoadFailed": "Falha ao carregar a grade de batidas",
+  "beatgrid.fixedBpm": "BPM fixo",
+  "beatgrid.fixedDragHint": "Arraste qualquer batida para mover toda a grade mantendo o BPM.",
+  "beatgrid.fixedBpmDescription": "Redistribui as batidas com intervalos iguais, da primeira batida até o fim da faixa. Pressione Enter ou saia do campo para aplicar.",
+  "beatgrid.invalidBpm": "Digite um BPM entre 30 e 300.",
+  "beatgrid.tooManyBeats": "Este BPM criaria mais de 20.000 batidas. Escolha um BPM menor.",
+  "beatgrid.unavailable": "A grade de batidas ou a duração da faixa está indisponível.",
   "sections.kind.intro": "Introdução",
   "sections.kind.outro": "Final",
   "sections.kind.break": "Pausa",
@@ -5468,6 +5506,11 @@ const pt = {
 };
 
 const id = {
+  "beatgrid.fixedBpm": "BPM tetap",
+  "beatgrid.fixedBpmDescription": "Atur ketukan dengan interval yang sama dari ketukan pertama hingga akhir lagu. Tekan Enter atau tinggalkan kolom untuk menerapkan.",
+  "beatgrid.invalidBpm": "Masukkan BPM antara 30 dan 300.",
+  "beatgrid.tooManyBeats": "BPM ini akan membuat lebih dari 20.000 ketukan. Pilih BPM yang lebih rendah.",
+  "beatgrid.unavailable": "Grid ketukan atau durasi lagu tidak tersedia.",
   "sections.kind.intro": "Intro",
   "sections.kind.outro": "Outro",
   "sections.kind.break": "Jeda",
@@ -6329,6 +6372,11 @@ const id = {
 };
 
 const fr = {
+  "beatgrid.fixedBpm": "BPM fixe",
+  "beatgrid.fixedBpmDescription": "Répartit les temps à intervalles égaux du premier temps à la fin du morceau. Appuyez sur Entrée ou quittez le champ pour appliquer.",
+  "beatgrid.invalidBpm": "Saisissez un BPM entre 30 et 300.",
+  "beatgrid.tooManyBeats": "Ce BPM créerait plus de 20 000 temps. Choisissez un BPM inférieur.",
+  "beatgrid.unavailable": "La grille rythmique ou la durée du morceau est indisponible.",
   "sections.kind.intro": "Intro",
   "sections.kind.outro": "Outro",
   "sections.kind.break": "Pause",
@@ -7375,6 +7423,11 @@ const ptPT = {
 };
 
 const es = {
+  "beatgrid.fixedBpm": "BPM fijo",
+  "beatgrid.fixedBpmDescription": "Distribuye los tiempos a intervalos iguales desde el primero hasta el final de la pista. Pulsa Intro o sal del campo para aplicar.",
+  "beatgrid.invalidBpm": "Introduce un BPM entre 30 y 300.",
+  "beatgrid.tooManyBeats": "Este BPM crearía más de 20.000 tiempos. Elige un BPM menor.",
+  "beatgrid.unavailable": "La cuadrícula de tiempos o la duración de la pista no está disponible.",
   "sections.kind.intro": "Intro",
   "sections.kind.outro": "Outro",
   "sections.kind.break": "Pausa",
@@ -8269,6 +8322,11 @@ const es = {
 // 루프) stay loanwords; translating those would read as odd to anyone who
 // has opened a DAW.
 const ko = {
+  "beatgrid.fixedBpm": "고정 BPM",
+  "beatgrid.fixedBpmDescription": "첫 비트부터 트랙 끝까지 비트를 일정한 간격으로 배치해요. Enter를 누르거나 입력란을 벗어나면 적용돼요.",
+  "beatgrid.invalidBpm": "30에서 300 사이의 BPM을 입력해 주세요.",
+  "beatgrid.tooManyBeats": "비트가 20,000개를 넘게 돼요. 더 낮은 BPM을 선택해 주세요.",
+  "beatgrid.unavailable": "비트 그리드 또는 트랙 길이를 사용할 수 없어요.",
 
   "sections.kind.intro": "인트로",
   "sections.kind.outro": "아웃트로",

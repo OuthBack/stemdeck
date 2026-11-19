@@ -61,6 +61,8 @@ let _editing = false;
 let _tool = "move";        // move | insert | delete | bar
 let _ripple = true;
 let _snap = true;
+let _fixedBpm = false;
+let _dragFixed = null;
 
 let _hoverIdx = -1;
 let _dragIdx = -1;
@@ -69,6 +71,12 @@ let _undo = [];
 let _redo = [];
 let _saveTimer = null;
 let _dirty = false;
+let _revision = 0;
+let _session = 0;
+let _saving = Promise.resolve();
+let _onSaveError = null;
+const _queuedSaves = new Map();
+const _resets = new Set();
 
 // ─── geometry ───────────────────────────────────────────────
 
@@ -189,6 +197,38 @@ function _moveBeat(idx, t, single) {
   _anchors.add(idx);
 }
 
+// ─── Fixed tempo translation from the gesture snapshot ──────
+function _moveFixedGrid(target) {
+  const base = _dragFixed;
+  if (!base.interval) {
+    _beats = [target];
+    return;
+  }
+  const step = base.interval;
+  const origin = target - base.index * step;
+  const limit = Math.min(_duration, 86399.999999);
+  let first = Math.ceil(-origin / step);
+  let last = Math.floor((limit - origin) / step);
+  while (first <= last && !_canPersistBeatTime(origin + first * step)) first++;
+  while (last >= first && !_canPersistBeatTime(origin + last * step)) last--;
+  if (last - first + 1 > 20000 || last < first) return;
+  const beats = Array.from({ length: last - first + 1 }, (_, index) => origin + (first + index) * step);
+  if (beats.some((time) => !_canPersistBeatTime(time))) return;
+  _beats = beats;
+  _bars = base.bars.filter((bar) => bar.beat >= first && bar.beat <= last)
+    .map((bar) => ({ ...bar, beat: bar.beat - first }));
+  const preceding = base.bars.filter((bar) => bar.beat < first).at(-1);
+  if (preceding) {
+    const nextRegion = base.bars.find((bar) => bar.beat >= first)?.beat ?? Infinity;
+    const downbeat = preceding.beat
+      + Math.ceil((first - preceding.beat) / preceding.beats_per_bar) * preceding.beats_per_bar;
+    if (downbeat <= last && downbeat < nextRegion) {
+      _bars.unshift({ ...preceding, beat: downbeat - first });
+    }
+  }
+  _anchors = new Set(base.anchors.filter((index) => index >= first && index <= last).map((index) => index - first));
+}
+
 function _insertBeat(t) {
   const time = _snapTime(t);
   let at = 0;
@@ -255,57 +295,97 @@ export function setBarLengthAt(idx, n) {
 
 function _commit() {
   _dirty = true;
+  _revision++;
   _onChange?.(_beats.slice(), _bars.map((b) => ({ ...b })));
   _render();
   if (_saveTimer !== null) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(_save, SAVE_DEBOUNCE_MS);
 }
 
-async function _save() {
-  _saveTimer = null;
-  if (!_jobId || !_dirty) return;
-  const payload = { beats: _beats.map((t) => +t.toFixed(6)), bars: _bars };
+function _saveSnapshot() {
+  return { jobId: _jobId, session: _session, revision: _revision,
+    body: JSON.stringify({ beats: _beats.map((t) => +t.toFixed(6)), bars: _bars }) };
+}
+
+async function _writeSnapshot(snapshot) {
+  const { jobId, session, revision, body } = snapshot;
   try {
-    const r = await fetch(`/api/jobs/${_jobId}/beats`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+    const r = await fetch(`/api/jobs/${jobId}/beats`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body,
     });
     if (!r.ok) throw new Error(`PATCH ${r.status}`);
-    _dirty = false;
+    snapshot.saved = true;
+    if (session === _session && revision === _revision) {
+      _dirty = false;
+      _onSaveError?.(false);
+    }
   } catch (e) {
+    if (session === _session && revision === _revision) _dirty = true;
+    if (session === _session) _onSaveError?.(true);
     console.warn("[beatgrid] failed to save edits:", e);
   }
 }
 
-/** Flush a pending save. Called before teardown so edits are never dropped. */
-export function flushBeatGrid() {
-  if (_saveTimer !== null) {
-    clearTimeout(_saveTimer);
-    _saveTimer = null;
-    _save();
-  }
+function _save() {
+  _saveTimer = null;
+  const key = `${_session}:${_revision}`;
+  if (!_jobId || !_dirty || _queuedSaves.has(key) || _resets.has(key)) return _saving;
+  const snapshot = _saveSnapshot();
+  _queuedSaves.set(key, snapshot);
+  _saving = _saving.then(() => _writeSnapshot(snapshot)).finally(() => _queuedSaves.delete(key));
+  return _saving;
 }
 
-export async function resetBeatGrid() {
-  if (!_jobId) return null;
-  try {
-    await fetch(`/api/jobs/${_jobId}/beats`, { method: "DELETE" });
-    const r = await fetch(`/api/jobs/${_jobId}/beats`);
-    if (!r.ok) return null;
-    const grid = await r.json();
-    _pushUndo();
-    _beats = (grid.beats || []).slice();
-    _bars = (grid.bars || []).slice();
-    _anchors = new Set();
-    _dirty = false;
-    _onChange?.(_beats.slice(), _bars.slice());
-    _render();
-    return grid;
-  } catch (e) {
-    console.warn("[beatgrid] reset failed:", e);
-    return null;
-  }
+/** Flush a pending save. Called before teardown so edits are never dropped. */
+export function flushBeatGrid() {
+  if (_saveTimer !== null) clearTimeout(_saveTimer);
+  _saveTimer = null;
+  return _save();
+}
+
+export function resetBeatGrid() {
+  if (!_jobId) return Promise.resolve(null);
+  const jobId = _jobId;
+  const session = _session;
+  const revision = _revision;
+  if (_saveTimer !== null) clearTimeout(_saveTimer);
+  _saveTimer = null;
+  const canceled = _dirty ? (_queuedSaves.get(`${session}:${revision}`) || _saveSnapshot()) : null;
+  const key = `${session}:${revision}`;
+  _resets.add(key);
+  let deletedGrid = false;
+  const operation = _saving.then(async () => {
+    try {
+      const deleted = await fetch(`/api/jobs/${jobId}/beats`, { method: "DELETE" });
+      if (!deleted.ok) throw new Error(`DELETE ${deleted.status}`);
+      deletedGrid = true;
+      const r = await fetch(`/api/jobs/${jobId}/beats`);
+      if (!r.ok && r.status !== 404) throw new Error(`GET ${r.status}`);
+      const grid = r.status === 404 ? { beats: [], bars: [] } : await r.json();
+      if (!Array.isArray(grid?.beats)) throw new Error("invalid beat grid");
+      if (session !== _session || revision !== _revision) return null;
+      _pushUndo();
+      _beats = grid.beats.slice();
+      _bars = (grid.bars || []).slice();
+      _anchors = new Set();
+      _fixedBpm = false;
+      _revision++;
+      _dirty = false;
+      _onSaveError?.(false);
+      _onChange?.(_beats.slice(), _bars.slice());
+      _render();
+      return grid;
+    } catch (e) {
+      if (session === _session) _onSaveError?.(true);
+      console.warn("[beatgrid] reset failed:", e);
+      if (canceled && (!canceled.saved || deletedGrid) && (session !== _session || revision === _revision)) {
+        await _writeSnapshot(canceled);
+      }
+      return null;
+    }
+  });
+  _saving = operation.finally(() => _resets.delete(key)).then(() => undefined);
+  return operation;
 }
 
 export function undoBeatGrid() {
@@ -324,6 +404,65 @@ export function redoBeatGrid() {
 
 export const canUndo = () => _undo.length > 0;
 export const canRedo = () => _redo.length > 0;
+
+/** Estimate the current tempo without imposing the fixed-BPM input limits. */
+export function getBeatGridBpm() {
+  if (_beats.length < 2) return null;
+  const intervals = _beats.slice(1).map((t, i) => t - _beats[i]);
+  if (intervals.some((dt) => !Number.isFinite(dt) || dt <= 0)) return null;
+  intervals.sort((a, b) => a - b);
+  const middle = Math.floor(intervals.length / 2);
+  const median = intervals.length % 2
+    ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2;
+  const bpm = 60 / median;
+  return Number.isFinite(bpm) ? bpm : null;
+}
+
+/** Redistribute from the first beat; manual edits remain available afterwards. */
+export function applyFixedBpm(bpm) {
+  if (!Number.isFinite(bpm) || bpm < 30 || bpm > 300) {
+    return { ok: false, reason: "invalidBpm" };
+  }
+  const validTime = (t) => Number.isFinite(t) && t >= 0 && t <= _duration && t < 86400;
+  const persistTime = (t) => +t.toFixed(6);
+  const first = _beats.length ? _beats[0] : 0;
+  if (!Number.isFinite(_duration) || _duration <= 0
+      || !validTime(first) || !validTime(persistTime(first))) {
+    return { ok: false, reason: "unavailable" };
+  }
+  const step = 60 / bpm;
+  const beats = [];
+  for (let i = 0; ; i++) {
+    const time = first + i * step;
+    if (!validTime(time) || !validTime(persistTime(time))) break;
+    if (beats.length === 20000) return { ok: false, reason: "tooManyBeats" };
+    beats.push(time);
+  }
+  const bars = _bars.filter((bar) => bar.beat < beats.length);
+  const sameBeats = beats.length === _beats.length
+    && beats.every((time, i) => persistTime(time) === persistTime(_beats[i]));
+  if (sameBeats && bars.length === _bars.length && _anchors.size === 0) return { ok: true };
+  _pushUndo();
+  _beats = beats;
+  _bars = bars;
+  _anchors = new Set();
+  _commit();
+  return { ok: true };
+}
+
+function _getMedianBeatInterval() {
+  if (_beats.length < 2) return null;
+  const intervals = _beats.slice(1).map((time, index) => time - _beats[index]);
+  if (intervals.some((interval) => !Number.isFinite(interval) || interval <= 0)) return null;
+  intervals.sort((a, b) => a - b);
+  const middle = Math.floor(intervals.length / 2);
+  return intervals.length % 2 ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2;
+}
+
+function _canPersistBeatTime(time) {
+  const valid = (value) => Number.isFinite(value) && value >= 0 && value <= _duration && value < 86400;
+  return valid(time) && valid(+time.toFixed(6));
+}
 
 // ─── rendering ──────────────────────────────────────────────
 
@@ -457,7 +596,9 @@ function _onPointerMove(e) {
   if (!_editing) return;
   if (_dragIdx >= 0) {
     e.stopPropagation();
-    _moveBeat(_dragIdx, _snapTime(_xToTime(e.clientX)), _dragSingle);
+    const target = _snapTime(_xToTime(e.clientX));
+    if (_dragFixed) _moveFixedGrid(target);
+    else _moveBeat(_dragIdx, target, _dragSingle);
     _onChange?.(_beats.slice(), _bars.map((b) => ({ ...b })));
     _render();
     return;
@@ -486,6 +627,7 @@ function _onPointerDown(e) {
   e.preventDefault();
   _pushUndo();
   _dragIdx = idx;
+  _dragFixed = _fixedBpm ? { ..._snapshot(), index: idx, interval: _getMedianBeatInterval() } : null;
   // Alt inverts the ripple setting for a single drag, so the occasional
   // one-beat nudge does not need a trip to the toolbar.
   _dragSingle = e.altKey ? _ripple : !_ripple;
@@ -497,6 +639,7 @@ function _onPointerUp(e) {
   e.stopPropagation();
   try { _canvas.releasePointerCapture?.(e.pointerId); } catch { /* never captured */ }
   _dragIdx = -1;
+  _dragFixed = null;
   _commit();
 }
 
@@ -511,7 +654,7 @@ function _onContextMenu(e) {
 
 const PREFS_KEY = "stemdeck:beatgrid-prefs";
 
-export function initBeatGrid({ jobId, grid, duration, onChange }) {
+export function initBeatGrid({ jobId, grid, duration, onChange, onSaveError }) {
   destroyBeatGrid();
   _jobId = jobId;
   _duration = Math.max(0, duration || 0);
@@ -523,6 +666,8 @@ export function initBeatGrid({ jobId, grid, duration, onChange }) {
   _redo = [];
   _dirty = false;
   _onChange = onChange || null;
+  _onSaveError = onSaveError || null;
+  _onSaveError?.(false);
 
   _host = document.querySelector(".waves-column");
   _canvas = document.getElementById("beatgrid-canvas");
@@ -550,6 +695,8 @@ export function initBeatGrid({ jobId, grid, duration, onChange }) {
 
 export function destroyBeatGrid() {
   flushBeatGrid();
+  _session++;
+  _onSaveError = null;
   if (_canvas) {
     _canvas.removeEventListener("pointermove", _onPointerMove);
     _canvas.removeEventListener("pointerdown", _onPointerDown);
@@ -570,6 +717,8 @@ export function destroyBeatGrid() {
   _undo = [];
   _redo = [];
   _editing = false;
+  _fixedBpm = false;
+  _dragFixed = null;
   _hoverIdx = -1;
   _dragIdx = -1;
   _canvas = null;
@@ -587,6 +736,8 @@ export function setBeatGridEditing(on) {
 }
 
 export const isBeatGridEditing = () => _editing;
+export const setBeatGridFixedBpm = (on) => { _fixedBpm = !!on; };
+export const getBeatGridFixedBpm = () => _fixedBpm;
 
 export function setBeatGridTool(tool) {
   _tool = ["move", "insert", "delete", "bar"].includes(tool) ? tool : "move";

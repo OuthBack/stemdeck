@@ -1442,7 +1442,7 @@ function setMetroOptionsAvailable(available) {
   metroPanel.classList.remove("hidden");
   metroPanel.classList.toggle("unavailable", !available);
   for (const el of metroPanel.querySelectorAll("button, select, input")) {
-    el.disabled = !available;
+    if (el.id !== "t-metro-edit") el.disabled = !available;
   }
 }
 

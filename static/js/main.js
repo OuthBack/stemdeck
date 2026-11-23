@@ -1,27 +1,43 @@
+// The studio mode first: it sets the class the DAW controls are hidden by.
+import "./mode.js";
 import {
-  playBtn, loopBtn, totalDuration, loopEnabled, loopStart, loopEnd,
+  loopBtn, loopEnabled, loopStart, loopEnd,
   setLoopStart, setLoopEnd, selectedStems, saveSelectedStems, stemSelectionReady,
-  currentJobId, vocalSplitMode, vocalSplitModeReady, setVocalSplitMode,
-  setAutoSectionsResetFn, bgFixedBpmToggleEl,
+  currentJobId, vocalSplitModeReady, setVocalSplitMode,
+  setAutoSectionsResetFn, bgFixedBpmToggleEl, onLoopChange, setTransposeExportAvailable,
 } from "./state.js";
 import { STEM_NAMES, syncStemNamesFromAPI } from "./constants.js";
 import { refreshStemChoiceVisuals } from "./stemChoice.js";
-import { renderEmptyShell, buildStripStems, downloadCurrentMix, downloadCurrentVideo, downloadAllStemsZip, downloadRegionMix, drawFooterPlaceholder, regionDragPayload, stemRegionDragPayload, prewarmRegionMix } from "./player.js";
+import { renderEmptyShell, buildStripStems, downloadCurrentMix, downloadCurrentVideo, downloadAllStemsZip, openStemsInReaper, downloadRegionMix, regionDragPayload, stemRegionDragPayload, prewarmRegionMix, mixTransposeBlocked } from "./player.js";
+import { transposeExportFromHealth } from "./transposeExport.js";
 import { wireJobForm, showError } from "./job.js";
 import { initSearch } from "./search.js";
 import { wireTransportButtons } from "./transport.js";
 import { wireBeatGridUi } from "./beatgridUi.js";
-import { togglePlayPause, updateLoopRegionVisual, toggleMetronome, transport, setPlayheadTime, setLoopRange } from "./transport.js";
-import { setSectionsLoopBridge } from "./sections.js";
-import { wireStemListControls, wireMixerToolbar, laneDragIcon } from "./mixer.js";
-import { initCatalog, collectDiagnostics } from "./catalog.js";
+import { togglePlayPause, updateLoopRegionVisual, toggleMetronome, transport, setPlayheadTime, setLoopRange, clearLoop, isCountInRunning } from "./transport.js";
+import { setSectionsLoopBridge, refreshSectionsAddState } from "./sections.js";
+import { setTimelineTagsBridge, seekToTagForKey, shortcutIndex, refreshTagLoopState } from "./timelineTags.js";
+import { wireStemListControls, laneDragIcon } from "./mixer.js";
+import { initCatalog, collectDiagnostics, wireCatalogControls } from "./catalog.js";
 import { initNotifications, notifyFailure, dismissFailuresByJobId } from "./notifications.js";
 import { runStoreMigrationIfNeeded } from "./utils.js";
+import { ignoredByShortcuts } from "./libraryDeleteKey.js";
 import { initI18n, applyTranslations, t, plural, onLanguageChange } from "./i18n.js";
 import { initFooterFit, refitFooter } from "./footerFit.js";
+import { externalLinkAction } from "./externalLinks.js";
 import { initArtistInfo } from "./artistInfo.js";
 import { initLyrics } from "./lyrics.js";
 import { initHelpMode } from "./helpMode.js";
+import { initVideoTake } from "./video/videoTake.js";
+import { initMasterPanel } from "./masterPanel.js";
+import { initModeUi } from "./modeUi.js";
+import { initKaraoke, isKaraokeOpen } from "./karaoke/karaoke.js";
+import { initStreamer, isStreamerOpen, isStreamerTakeOpen } from "./streamer/streamer.js";
+import { isRecording } from "./capture/recordUi.js";
+import { initMixMode } from "./mixMode.js";
+import { initModeStems } from "./modeStems.js";
+import { initStemsControl } from "./stemsControl.js";
+import { applyVocalSplitHealth, onVocalSplitAvailability, vocalSplitUnavailable, vocalSplitUnavailableText, effectiveVocalSplitMode } from "./vocalSplitState.js";
 
 // ─── Stem choice toggles on the import page ───
 //
@@ -74,7 +90,15 @@ function wireVocalModeToggle() {
   for (const btn of wrap.querySelectorAll(".vocal-mode-btn")) {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.mode;
-      if (selectedStems.has("vocals") && vocalSplitMode === mode) {
+      // Lead + Backing cannot be made on this install (#832): say why,
+      // which a tooltip alone does not on a touch screen, and change nothing.
+      if (mode === "split" && vocalSplitUnavailable()) {
+        showError(vocalSplitUnavailableText(), null, { retry: false });
+        return;
+      }
+      // The mode as lit (Combined while Lead + Backing is unavailable), so
+      // pressing the lit button always switches vocals off.
+      if (selectedStems.has("vocals") && effectiveVocalSplitMode() === mode) {
         // Pressing the mode that is already in force is how vocals are turned
         // off, the same way pressing any other lit chip switches that stem off.
         selectedStems.delete("vocals");
@@ -87,6 +111,10 @@ function wireVocalModeToggle() {
       buildStripStems();
     });
   }
+  // The answer comes from /api/health (wireFooterControls reads it), or from
+  // a split that just found a dependency missing.
+  onVocalSplitAvailability(() => refreshStemChoiceVisuals());
+  onLanguageChange(() => refreshStemChoiceVisuals());
 }
 
 // ─── Experimental song-structure extraction ───
@@ -156,6 +184,39 @@ function wireAutoSectionsToggle() {
       return forceOff();
     })
     .catch((e) => console.warn("[structure] could not read the setting:", e));
+}
+
+// Detect lyrics: whether the next imports look for lyrics (LRCLIB, then a
+// transcript of the vocals). Off by default. Unlike Detect structure it is a
+// standing choice, kept on the server until changed, so the button shows the
+// server's answer at startup and writes back on click.
+function wireAutoLyricsToggle() {
+  const btn = document.getElementById("autoLyricsBtn");
+  if (!btn) return;
+  const paint = (on) => btn.setAttribute("aria-pressed", String(!!on));
+  btn.addEventListener("click", async () => {
+    const next = btn.getAttribute("aria-pressed") !== "true";
+    paint(next);
+    btn.disabled = true;
+    try {
+      const r = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auto_lyrics: next }),
+      });
+      if (!r.ok) throw new Error(String(r.status));
+      paint((await r.json()).auto_lyrics);
+    } catch (e) {
+      console.warn("[lyrics] could not save the setting:", e);
+      paint(!next); // the server did not take it, so do not claim it did
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  fetch("/api/settings", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => { if (d) paint(d.auto_lyrics); })
+    .catch((e) => console.warn("[lyrics] could not read the setting:", e));
 }
 
 function handleStemChoiceClick(stem) {
@@ -442,22 +503,42 @@ setSectionsLoopBridge({
   getLoop: () => ({ enabled: loopEnabled, start: loopStart, end: loopEnd }),
   setLoopRange,
 });
+onLoopChange(refreshSectionsAddState);
+// Tags (#1075) the same way: where the playhead is, and move it.
+setTimelineTagsBridge({
+  getTime: () => transport()?.getCurrentTime() ?? null,
+  seek: setPlayheadTime,
+  // The marker loop buttons arm the same loop a section does.
+  getLoop: () => ({ enabled: loopEnabled, start: loopStart, end: loopEnd }),
+  setLoopRange,
+  clearLoop,
+});
+onLoopChange(refreshTagLoopState);
 wireBeatGridUi();
 wireFooterControls();
-requestAnimationFrame(drawFooterPlaceholder);
 wireStemListControls();
-wireMixerToolbar();
 wireStemChoiceButtons();
 wireAllButton();
 wireVocalModeToggle();
 wireStemChipsPopover();
 wireAutoSectionsToggle();
+wireAutoLyricsToggle();
 wireFileDrop();
 wireAppShellControls();
 initFooterFit();
 initArtistInfo();
 initLyrics();
 initHelpMode();
+// Camera in the record flow and "Make video" (static/js/video/). Async only to
+// load the capture modules; a failure there must not stop the studio.
+initVideoTake().catch((err) => console.warn("[video] init failed:", err));
+initMasterPanel();
+initModeUi();
+initMixMode();
+initModeStems();
+initStemsControl();
+initKaraoke();
+initStreamer();
 // Re-measure after a language switch. Measured across en/fr/de/pl the strip
 // came out the same width in all four, because the group labels are 10px
 // uppercase and narrower than the controls under them, so this is not the
@@ -468,6 +549,10 @@ onLanguageChange(refitFooter);
 // Every chip's label changes width with the language, so the count that fits
 // changes with it too.
 onLanguageChange(fitStemChips);
+// Here with everything else, not in initCatalog after the awaits below: on
+// the desktop app each of those is a round trip to the shell, and a press on
+// Settings in that time used to do nothing (#1010).
+wireCatalogControls({ languageReady: i18nReady });
 
 (async () => {
   await i18nReady;
@@ -510,17 +595,43 @@ function wireFooterControls() {
   const itemMix    = document.getElementById("t-export-mix");
   const itemStems  = document.getElementById("t-export-stems");
   const itemRegion = document.getElementById("t-export-region");
+  const itemReaper = document.getElementById("t-export-reaper");
+  const itemOpenReaper = document.getElementById("t-export-open-reaper");
+  // Open in REAPER needs the desktop app (it unpacks the project on disk and
+  // launches REAPER, which a browser download cannot do) and a REAPER to
+  // launch: the one chosen in Settings > External editors, or one found where
+  // its installer puts it. Asked again each time the menu opens, so
+  // installing REAPER or choosing it in Settings shows the row without a
+  // restart. A shell without the command keeps the row hidden.
+  async function refreshOpenReaperRow() {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!itemOpenReaper || !invoke) return;
+    try {
+      const status = await invoke("reaper_status");
+      itemOpenReaper.hidden = !status?.path;
+    } catch (e) {
+      console.warn("[export] could not look for REAPER:", e);
+      itemOpenReaper.hidden = true;
+    }
+  }
+  refreshOpenReaperRow();
   const mixDescEl  = itemMix?.querySelector(".chip-item-desc");
+  const allItems = () => [itemMix, itemStems, itemReaper, itemOpenReaper, itemRegion];
   // Only the rows actually visible in the current format mode (MP4 hides the
-  // audio-only Stems/Region rows).
-  const actionItems = () =>
-    [itemMix, itemStems, itemRegion].filter((it) => it && it.offsetParent !== null);
+  // audio-only Stems/REAPER/Region rows).
+  const actionItems = () => allItems().filter((it) => it && it.offsetParent !== null);
 
   // MP4 is a format choice, shown only for jobs with a preserved video track.
   // It applies to the mix only — stems/region are audio-only.
   const videoAvailable = () => !!exportWrap?.classList.contains("has-video");
 
   let format = "wav";
+  // OGG needs an FFmpeg with libvorbis, which is optional (#824). The
+  // backend's /api/health says which formats its FFmpeg can encode. Without
+  // libvorbis the OGG button stays visible but disabled, with the reason
+  // under it. An unknown answer (an older backend, a failed probe) leaves OGG
+  // offered as before, and the backend still refuses it with a clear message.
+  let oggUnavailable = false;
   let busy = false;
   // True from the click until the transfer starts or the dialog is cancelled.
   let picking = false;
@@ -530,6 +641,8 @@ function wireFooterControls() {
     closeAllChipPanels();
     // A previous (video) job may have left MP4 selected; revert if unavailable now.
     if (format === "mp4" && !videoAvailable()) setFormat("wav");
+    applyTransposeGate();
+    refreshOpenReaperRow();
     exportPanel?.classList.remove("hidden");
     exportBtn?.setAttribute("aria-expanded", "true");
   }
@@ -545,11 +658,18 @@ function wireFooterControls() {
       btn?.setAttribute("aria-checked", String(f === val));
     }
     applyFormatState();
+    // applyFormatState gives the region row back its loop state; a held-back
+    // transposed mix keeps it disabled.
+    if (panelOpen()) applyTransposeGate();
   }
   fmtWav?.addEventListener("click", (e) => { e.stopPropagation(); setFormat("wav"); });
   fmtMp3?.addEventListener("click", (e) => { e.stopPropagation(); setFormat("mp3"); });
   fmtFlac?.addEventListener("click", (e) => { e.stopPropagation(); setFormat("flac"); });
-  fmtOgg?.addEventListener("click", (e) => { e.stopPropagation(); setFormat("ogg"); });
+  fmtOgg?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (oggUnavailable) return;
+    setFormat("ogg");
+  });
   fmtMp4?.addEventListener("click", (e) => { e.stopPropagation(); setFormat("mp4"); });
 
   // MP4 exports the mix muxed with the source video. Stems and region have no
@@ -569,6 +689,59 @@ function wireFooterControls() {
   // wording even while MP4 is selected).
   onLanguageChange(applyFormatState);
 
+  function applyOggAvailability() {
+    if (!fmtOgg) return;
+    fmtOgg.setAttribute("aria-disabled", String(oggUnavailable));
+    if (oggUnavailable) fmtOgg.title = t("export.oggUnavailable");
+    else fmtOgg.removeAttribute("title");
+    exportPanel?.classList.toggle("ogg-unavailable", oggUnavailable);
+    if (oggUnavailable && format === "ogg") setFormat("wav");
+  }
+  onLanguageChange(applyOggAvailability);
+
+  // A transposed mix needs FFmpeg's rubberband filter to export, which the
+  // macOS download and Homebrew's plain FFmpeg do not have (#858). Then Mix,
+  // Region and MP4 (all send the keys) are held back with the reason in the
+  // menu, and the stems zip (never transposed) stays. Worked out when the menu
+  // opens and again on a click, since a key can change while it is open; a
+  // mix with every key at 0, or an unknown answer, changes nothing.
+  let transposeBlocked = false;
+  function applyTransposeGate() {
+    transposeBlocked = mixTransposeBlocked();
+    exportPanel?.classList.toggle("transpose-unavailable", transposeBlocked);
+    for (const it of [itemMix, itemRegion]) {
+      if (!it) continue;
+      if (transposeBlocked) {
+        it.setAttribute("aria-disabled", "true");
+        it.title = t("export.transposeUnavailable");
+      } else {
+        it.removeAttribute("title");
+      }
+    }
+    if (!transposeBlocked && !busy) {
+      itemMix?.removeAttribute("aria-disabled");
+      applyFormatState(); // gives the region row back its own disabled state
+    }
+  }
+  onLanguageChange(() => { if (transposeBlocked) applyTransposeGate(); });
+
+  fetch("/api/health", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((health) => {
+      oggUnavailable = health?.export_formats?.ogg === false;
+      applyOggAvailability();
+      setTransposeExportAvailable(transposeExportFromHealth(health));
+      if (panelOpen()) applyTransposeGate();
+      // The same answer says whether Lead + Backing can be made (#832).
+      applyVocalSplitHealth(health);
+      // An FFmpeg older than 5.1 cannot run any export: say so now, not at
+      // the first export.
+      if (health?.ffmpeg_too_old) {
+        showError(t("export.ffmpegTooOld", { version: health.ffmpeg_too_old }), null, { retry: false });
+      }
+    })
+    .catch((e) => console.warn("[export] format check failed:", e));
+
   function resetBusy() {
     busy = false;
     exportBtn?.classList.remove("is-busy");
@@ -578,7 +751,7 @@ function wireFooterControls() {
     // by the time this runs every row is hidden and a visibility-filtered clear
     // would clear nothing at all -- leaving the menu dead for the rest of the
     // session (#335).
-    for (const it of [itemMix, itemStems, itemRegion]) it?.removeAttribute("aria-disabled");
+    for (const it of allItems()) it?.removeAttribute("aria-disabled");
     applyFormatState(); // re-derives the region row's genuine disabled state
   }
 
@@ -681,6 +854,8 @@ function wireFooterControls() {
   // Export Mix: MP4 produces the video; any other format an audio mix.
   itemMix?.addEventListener("click", (e) => {
     e.stopPropagation();
+    applyTransposeGate();
+    if (transposeBlocked) return;
     runExport(
       (onStart) => (format === "mp4" ? downloadCurrentVideo(onStart) : downloadCurrentMix(format, onStart)),
       t("export.allMuted"),
@@ -689,6 +864,7 @@ function wireFooterControls() {
 
   itemRegion?.addEventListener("click", (e) => {
     e.stopPropagation();
+    applyTransposeGate();
     if (itemRegion.getAttribute("aria-disabled") === "true") return;
     runExport((onStart) => downloadRegionMix(format, onStart), t("export.allMuted"));
   });
@@ -699,6 +875,21 @@ function wireFooterControls() {
     e.stopPropagation();
     if (itemStems.getAttribute("aria-disabled") === "true") return;
     runExport((onStart) => downloadAllStemsZip(format, onStart), t("export.noStems"));
+  });
+
+  // The same zip plus a REAPER project (.rpp) naming every file in it.
+  itemReaper?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (itemReaper.getAttribute("aria-disabled") === "true") return;
+    runExport((onStart) => downloadAllStemsZip(format, onStart, { reaper: true }), t("export.noStems"));
+  });
+
+  // Desktop only: save that zip, unpack it into a folder beside it and open
+  // the project with the system's app for .rpp files.
+  itemOpenReaper?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (itemOpenReaper.getAttribute("aria-disabled") === "true") return;
+    runExport((onStart) => openStemsInReaper(format, onStart), t("export.noStems"));
   });
 
   // Keyboard: ↓ opens/moves into the menu, ↑/↓ cycle rows, Esc closes + restores focus.
@@ -716,28 +907,6 @@ function wireFooterControls() {
     else if (e.key === "ArrowDown") { e.preventDefault(); focusable[(idx + 1) % focusable.length]?.focus(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); focusable[(idx - 1 + focusable.length) % focusable.length]?.focus(); }
   });
-
-  // ── Scrub bar seek ──
-  const scrub = document.getElementById("footer-scrub");
-  if (scrub) {
-    function seekToX(clientX) {
-      // setPlayheadTime, not multitrack.setTime: on the default chunked engine
-      // the multitrack is silent and this whole bar did nothing. It also moves
-      // the playhead marker, footer times and presence playhead, which the old
-      // call never did (#515).
-      if (!totalDuration) return;
-      const rect = scrub.getBoundingClientRect();
-      const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      setPlayheadTime(frac * totalDuration);
-    }
-    let _scrubbing = false;
-    scrub.addEventListener("mousedown", (e) => {
-      _scrubbing = true;
-      seekToX(e.clientX);
-    });
-    document.addEventListener("mousemove", (e) => { if (_scrubbing) seekToX(e.clientX); });
-    document.addEventListener("mouseup",   () => { _scrubbing = false; });
-  }
 
   // ── Close panels on outside click ──
   // Inside the menu is not "away": ticking an option must not dismiss it. The
@@ -1045,9 +1214,9 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (!transport()) return;
-  // Textareas were not excluded, so Space in the log viewer started playback
-  // instead of scrolling.
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+  // Ctrl, Cmd and Alt chords are the browser's, and a focused field or select
+  // keeps its keys: Space there used to play the song instead.
+  if (ignoredByShortcuts(e)) return;
   if (e.code === "Space") {
     e.preventDefault();
     togglePlayPause();
@@ -1075,8 +1244,39 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     setLoopEnd(Math.max(transport().getCurrentTime(), loopStart + 0.5));
     updateLoopRegionVisual();
+  } else if (shortcutIndex(e.code, e.key) >= 0 && seekToTagForKey(e, markerKeyState(e))) {
+    // 1 to 9 jump to the song's first nine markers (#1075). Plain digits, not
+    // Ctrl or Cmd with one: those switch the browser's tabs and a page cannot
+    // take them, and Alt is excluded above (Option types a symbol on a Mac,
+    // and Alt+digit switches tabs in Firefox on Linux). No other key in the
+    // app uses a digit. A digit with no marker is left alone, and so is every
+    // digit outside the studio view (tagShortcutIndex in timelineTags.js).
+    e.preventDefault();
   }
 });
+
+/**
+ * What the marker keys need to know about the rest of the app, each read from
+ * the module that owns it. A dialog counts when it is modal and showing, or
+ * when the key was pressed inside one or inside a menu (the rule karaoke.js
+ * and streamer.js use for their own keys). A non-modal one that does not have
+ * the key, such as the floating video window, leaves the digits working.
+ */
+function markerKeyState(e) {
+  const inDialog = e.target instanceof Element && Boolean(e.target.closest("[role=dialog], [role=menu]"));
+  const modalOpen = [...document.querySelectorAll('[role=dialog][aria-modal="true"]')]
+    .some((el) => el.getClientRects().length > 0);
+  return {
+    karaokeOpen: isKaraokeOpen(),
+    streamerOpen: isStreamerOpen(),
+    dialogOpen: inDialog || modalOpen,
+    // helpMode.js marks the page with this class while the Guide is on, as
+    // modeUi.js reads it.
+    guideOpen: document.body.classList.contains("help-mode"),
+    recording: isRecording() || isStreamerTakeOpen(),
+    countIn: isCountInRunning(),
+  };
+}
 
 // ─── Drag audio out to a DAW or a folder ───
 //
@@ -1201,34 +1401,19 @@ if (canDragOut) {
 
 // ─── External links ───
 
-document.addEventListener("click", (e) => {
-  const dl = e.target.closest("a.lane-dl");
-  if (dl?.href) {
-    const invoke = window.__TAURI__?.core?.invoke;
-    // A download attribute is meaningless to the OS handler, so open_url used to
-    // hand the stem to a browser or media player instead of saving it. Save it
-    // like every other export, which also honours the song-prefixed name (#336).
-    // Placeholder rows for absent stems keep href="#" and carry no name.
-    if (invoke && dl.download && !dl.getAttribute("href").endsWith("#")) {
-      e.preventDefault();
-      invoke("save_audio_file", { url: dl.href, filename: dl.download });
-      return;
-    }
-    if (invoke) {
-      e.preventDefault();
-      invoke("open_url", { url: dl.href });
-    }
-    return;
-  }
-  const anchor = e.target.closest('a[target="_blank"]');
-  if (anchor?.href) {
-    const openUrl = window.__TAURI__?.core?.invoke;
-    if (openUrl) {
-      e.preventDefault();
-      openUrl("open_url", { url: anchor.href });
-    }
-  }
-});
+// click covers the primary button, with or without Ctrl, Cmd or Shift. A
+// middle-click fires auxclick instead, which the webview would otherwise
+// answer with its own window (#1041). The decision is in externalLinks.js.
+function routeExternalLink(e) {
+  const invoke = window.__TAURI__?.core?.invoke;
+  const act = externalLinkAction({ type: e.type, button: e.button, target: e.target, hasShell: Boolean(invoke) });
+  if (!act) return;
+  e.preventDefault();
+  if (act.action === "save") invoke("save_audio_file", { url: act.url, filename: act.filename });
+  else if (act.action === "open") invoke("open_url", { url: act.url });
+}
+document.addEventListener("click", routeExternalLink);
+document.addEventListener("auxclick", routeExternalLink);
 
 // ─── Global error logging ───
 
